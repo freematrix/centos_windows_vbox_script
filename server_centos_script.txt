@@ -1,0 +1,311 @@
+#!/bin/bash
+
+#vars
+name_net_device=enp0s3
+NETMASK=255.255.255.0
+IPMACHINE=192.168.1.70
+IPROUTER=192.168.1.254
+USERSAMBA=meuser
+HOSTIP=192.168.1.111
+EDITORKEY=VSCODE
+PWDMARIADB=root
+#commands
+
+
+#install repel and remi
+sudo dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+sleep 3
+sudo dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+sleep 3
+
+
+#disable firewall and install some utilities
+sudo yum -y update
+sudo systemctl stop firewalld
+sudo systemctl disable firewalld
+sudo yum -y install nano net-tools unzip wget htop cifs-utils dnf-utils
+sleep 3
+
+
+# disable SELINUX
+sudo sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
+
+
+# set static ip and add network information
+sudo sed -i 's/BOOTPROTO="dhcp"/BOOTPROTO=static/g' /etc/sysconfig/network-scripts/ifcfg-${name_net_device}
+sudo tee -a /etc/sysconfig/network-scripts/ifcfg-${name_net_device} > /dev/null <<EOT
+IPADDR=${IPMACHINE}
+NETMASK=${NETMASK}
+GATEWAY=${IPROUTER}
+DNS1=8.8.8.8
+DNS2=8.8.4.4
+DNS3=${IPROUTER}
+EOT
+
+
+
+# install apache
+sudo dnf install -y httpd mod_ssl
+sleep 3
+sudo systemctl start httpd.service
+sudo systemctl enable httpd.service
+sudo sed -i "s/ServerAdmin root@localhost/ServerName ${IPMACHINE}/g" /etc/httpd/conf/httpd.conf
+sleep 3
+
+
+
+
+#create default conf
+sudo tee -a /etc/httpd/conf.d/000_default.conf > /dev/null <<EOT
+<VirtualHost *:80>
+	DocumentRoot "/var/www/html"
+	<Directory "/var/www/html">
+		DirectoryIndex index.php index.html
+		Options -Indexes +FollowSymLinks
+		AllowOverride All
+		Require all granted
+	</Directory>
+</VirtualHost>
+EOT
+
+
+
+
+#install mariadb
+sudo tee -a /etc/yum.repos.d/mariadb.repo > /dev/null <<EOT
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.5/centos8-amd64
+module_hotfixes=1
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck=1
+EOT
+
+sudo dnf install -y MariaDB-server
+sleep 3
+sudo systemctl start mariadb
+sudo systemctl enable mariadb.service
+sleep 3
+
+#sudo mysql_secure_installation
+sudo mysql -e "SET PASSWORD FOR root@localhost = PASSWORD('${PWDMARIADB}');FLUSH PRIVILEGES;" 
+printf "123\n n\n n\n y\n y\n y\n y\n" | sudo mysql_secure_installation
+sleep 3
+
+
+
+
+#install php
+# check http://<ip_centos>/info.php
+sudo dnf module install -y php:remi-7.4
+sleep 3
+sudo dnf install -y php php-cli php-common php-fpm php-mysqlnd php-zip php-gd php-mcrypt php-mbstring php-curl php-xml php-pear php-bcmath php-json php-dom php-simplexml php-xml php-xmlreader php-curl php-date php-exif php-filter php-ftp php-gd php-hash php-iconv php-json php-libxml php-mbstring php-mysqlnd php-openssl php-pcre php-posix php-sockets php-spl php-tokenizer php-zlib
+sleep 3
+echo '<?php phpinfo(); ?>' | sudo tee -a /var/www/html/info.php
+
+
+
+
+#install phpmyadmin
+sudo mkdir /var/www/site
+cd /var/www/site
+sudo wget https://files.phpmyadmin.net/phpMyAdmin/5.0.2/phpMyAdmin-5.0.2-all-languages.zip
+sudo unzip phpMyAdmin-5.0.2-all-languages.zip
+sleep 3
+sudo rm phpMyAdmin-5.0.2-all-languages.zip
+sudo mv phpMyAdmin-5.0.2-all-languages pmasite.local.com
+cd pmasite.local.com
+sudo cp /var/www/site/pmasite.local.com/config.sample.inc.php /var/www/site/pmasite.local.com/config.inc.php
+randomstring=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 40 ; echo '')
+sudo sed -i "s/\$cfg\['blowfish_secret'\] = ''/\$cfg\['blowfish_secret'\] = '${randomstring}'/g" /var/www/site/pmasite.local.com/config.inc.php
+echo "\$cfg['Lang'] = 'en_GB';" | sudo tee -a config.inc.php
+
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['controlhost'\] = '';/\$cfg\['Servers'\]\[\$i\]\['controlhost'\] = '127.0.0.1';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['controlport'\] = '';/\$cfg\['Servers'\]\[\$i\]\['controlport'\] = '';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['controluser'\] = 'pma';/\$cfg\['Servers'\]\[\$i\]\['controluser'\] = 'pma';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['controlpass'\] = 'pmapass';/\$cfg\['Servers'\]\[\$i\]\['controlpass'\] = 'pmapwd';/g" config.inc.php
+
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['pmadb'\] = 'phpmyadmin';/\$cfg\['Servers'\]\[\$i\]\['pmadb'\] = 'phpmyadmin';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['bookmarktable'\] = 'pma__bookmark';/\$cfg\['Servers'\]\[\$i\]\['bookmarktable'\] = 'pma__bookmark';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['relation'\] = 'pma__relation';/\$cfg\['Servers'\]\[\$i\]\['relation'\] = 'pma__relation';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['table_info'\] = 'pma__table_info';/\$cfg\['Servers'\]\[\$i\]\['table_info'\] = 'pma__table_info';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['table_coords'\] = 'pma__table_coords';/\$cfg\['Servers'\]\[\$i\]\['table_coords'\] = 'pma__table_coords';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['pdf_pages'\] = 'pma__pdf_pages';/\$cfg\['Servers'\]\[\$i\]\['pdf_pages'\] = 'pma__pdf_pages';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['column_info'\] = 'pma__column_info';/\$cfg\['Servers'\]\[\$i\]\['column_info'\] = 'pma__column_info';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['history'\] = 'pma__history';/\$cfg\['Servers'\]\[\$i\]\['history'\] = 'pma__history';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['table_uiprefs'\] = 'pma__table_uiprefs';/\$cfg\['Servers'\]\[\$i\]\['table_uiprefs'\] = 'pma__table_uiprefs';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['tracking'\] = 'pma__tracking';/\$cfg\['Servers'\]\[\$i\]\['tracking'\] = 'pma__tracking';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['userconfig'\] = 'pma__userconfig';/\$cfg\['Servers'\]\[\$i\]\['userconfig'\] = 'pma__userconfig';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['recent'\] = 'pma__recent';/\$cfg\['Servers'\]\[\$i\]\['recent'\] = 'pma__recent';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['favorite'\] = 'pma__favorite';/\$cfg\['Servers'\]\[\$i\]\['favorite'\] = 'pma__favorite';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['users'\] = 'pma__users';/\$cfg\['Servers'\]\[\$i\]\['users'\] = 'pma__users';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['usergroups'\] = 'pma__usergroups';/\$cfg\['Servers'\]\[\$i\]\['usergroups'\] = 'pma__usergroups';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['navigationhiding'\] = 'pma__navigationhiding';/\$cfg\['Servers'\]\[\$i\]\['navigationhiding'\] = 'pma__navigationhiding';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['savedsearches'\] = 'pma__savedsearches';/\$cfg\['Servers'\]\[\$i\]\['savedsearches'\] = 'pma__savedsearches';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['central_columns'\] = 'pma__central_columns';/\$cfg\['Servers'\]\[\$i\]\['central_columns'\] = 'pma__central_columns';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['designer_settings'\] = 'pma__designer_settings';/\$cfg\['Servers'\]\[\$i\]\['designer_settings'\] = 'pma__designer_settings';/g" config.inc.php
+sudo sed -i "s/\/\/ \$cfg\['Servers'\]\[\$i\]\['export_templates'\] = 'pma__export_templates';/\$cfg\['Servers'\]\[\$i\]\['export_templates'\] = 'pma__export_templates';/g" config.inc.php
+
+
+sudo tee -a /etc/httpd/conf.d/pmasite.local.com.conf > /dev/null <<EOT
+<VirtualHost *:80>
+	ServerName   pmasite.local.com
+	ServerAlias  pmasite.local.com
+	DocumentRoot /var/www/site/pmasite.local.com
+
+	<Directory /var/www/site/pmasite.local.com >
+		Options -Indexes +FollowSymLinks
+		Require all granted
+		AllowOverride All
+	</Directory>
+
+	ErrorLog /var/log/httpd/pmasite-error.log
+	CustomLog /var/log/httpd/pmasite-access.log combined
+</VirtualHost>
+EOT
+
+	
+# permission for phpmyadmin
+sudo chown apache:apache -R /var/www/site/pmasite.local.com
+cd /var/www/site/pmasite.local.com
+sudo find . -type d -exec chmod 755 {} \;
+sudo find . -type f -exec chmod 644 {} \;
+sleep 3
+
+
+# create phpmyadmin db and user
+mysql -u root --password=root -h 127.0.0.1 --port=3306 < "/var/www/site/pmasite.local.com/sql/create_tables.sql"
+sleep 3
+mysql -u root --password=root -h 127.0.0.1 --port=3306 -e "CREATE USER 'pma'@'localhost' IDENTIFIED BY 'pmapwd';GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost' WITH GRANT OPTION;FLUSH PRIVILEGES;"
+sleep 3
+
+
+
+#sudo service httpd restart
+#sudo systemctl restart php-fpm
+
+
+
+
+#install composer
+cd ~
+php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+php -r "if (hash_file('sha384', 'composer-setup.php') === 'e5325b19b381bfd88ce90a5ddb7823406b2a38cff6bb704b0acc289a09c8128d4a8ce2bbafcd1fcbdc38666422fe2806') { echo 'Installer verified'; } else { echo 'Installer corrupt'; unlink('composer-setup.php'); } echo PHP_EOL;"
+sudo php composer-setup.php --filename=composer --install-dir=/usr/local/bin 
+php -r "unlink('composer-setup.php');"
+sleep 3
+
+
+
+# create the share folder - this is the root folder I want to share with windows
+sudo mkdir "/var/www/share"
+sudo mkdir "/var/www/share/sites"
+sudo mkdir "/var/www/share/sites/testsite.local.com"
+sudo mkdir "/var/www/share/logs"
+
+
+# create a simple web site
+sudo tee -a /var/www/share/sites/testsite.local.com/index.php > /dev/null <<EOT
+<?php
+for (\$x = 0; \$x <= 10; \$x++) {
+  echo "The number is: \$x <br>";
+}
+?>
+EOT
+
+sudo tee -a /etc/httpd/conf.d/testsite.local.com.conf > /dev/null <<EOT
+<virtualhost *:80>
+	ServerName  testsite.local.com
+	ServerAlias testsite.local.com
+	DocumentRoot "/var/www/share/sites/testsite.local.com"
+ 
+	<directory "/var/www/share/sites/testsite.local.com" >
+		Options -Indexes +FollowSymLinks
+		AllowOverride All
+	</directory>
+ 
+	ErrorLog  /var/www/share/logs/testsite.local.com.error.log
+	CustomLog /var/www/share/logs/testsite.local.com.access.log combined
+</virtualhost>
+EOT
+
+
+# assign permissions
+sudo chown -R apache:apache "/var/www/share"
+sudo chmod -R 777 "/var/www/share"
+
+
+
+
+
+# install xdebug for debugging inside Vscode
+sudo dnf install -y php-xdebug
+sleep 3
+sudo tee -a /etc/php.d/15-xdebug.ini > /dev/null <<EOT
+xdebug.remote_enable=1
+xdebug.remote_autostart=0
+xdebug.remote_host=${HOSTIP}
+xdebug.remote_port = 9000
+xdebug.idekey=${EDITORKEY}
+EOT
+
+
+
+
+sudo service httpd restart && sudo systemctl restart php-fpm
+sleep 3
+
+
+
+# install samba
+# 
+sudo dnf install -y samba samba-client
+sudo smbpasswd -a ${USERSAMBA}
+sudo tee -a /etc/samba/smb.conf > /dev/null <<EOT
+
+[share] 
+	path = /var/www/share 
+	available = yes
+	valid users = ${USERSAMBA}
+	read only = no
+	browsable = yes
+	public = yes
+	writable = yes
+EOT
+
+
+sudo systemctl enable smb.service
+sudo systemctl restart smb.service
+
+
+sudo reboot
+
+#sudo service httpd restart && sudo systemctl restart php-fpm
+
+################### DEBUG with xdebug and vscode ######################
+# launch.json should look like
+#{
+#    "version": "0.2.0",
+#    "configurations": [
+#        {
+#            "name": "Listen for XDebug",
+#            "type": "php",
+#            "request": "launch",
+#            "pathMappings": {
+#                "/var/www/share/site/testsite.local.com": "${workspaceRoot}"
+#            },    
+#            "port": 9000
+#        },
+#        {
+#            "name": "Launch currently open script",
+#            "type": "php",
+#            "request": "launch",
+#            "program": "${file}",
+#            "cwd": "${fileDirname}",
+#            "port": 9000
+#        }
+#    ]
+#}
+# to debug use ?XDEBUG_SESSION_START=1 query string
+# 
+########################################################################
